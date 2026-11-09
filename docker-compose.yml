@@ -1,0 +1,72 @@
+# OpenClaw on Mac (OrbStack / Docker Desktop)
+#
+# Isolation model: the agent has full access inside the container, but the only
+# host paths it can see are the three folders in this repo:
+#   ./config     -> /home/node/.openclaw            (state, config, credentials)
+#   ./workspace  -> /home/node/.openclaw/workspace  (agent workspace)
+#   ./secrets    -> /home/node/.config/openclaw     (auth-profile key)
+# Do not add other mounts or the Docker socket unless you mean to widen access.
+
+x-openclaw-common: &openclaw-common
+  image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+  env_file:
+    - path: .env
+      required: false
+  cap_drop:
+    - NET_RAW
+    - NET_ADMIN
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  volumes:
+    - ./config:/home/node/.openclaw
+    - ./workspace:/home/node/.openclaw/workspace
+    - ./secrets:/home/node/.config/openclaw
+
+x-openclaw-env: &openclaw-env
+  HOME: /home/node
+  OPENCLAW_HOME: /home/node
+  TERM: xterm-256color
+  # Pin container-side paths so host paths in .env never leak into the runtime.
+  OPENCLAW_STATE_DIR: /home/node/.openclaw
+  OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+  OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+  OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+  OPENCLAW_GATEWAY_PORT: "18789"
+  OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+  TZ: ${OPENCLAW_TZ:-UTC}
+
+services:
+  openclaw-gateway:
+    <<: *openclaw-common
+    environment:
+      <<: *openclaw-env
+    # Lets the agent reach host-side Ollama / LM Studio via host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Published on localhost only; nothing on your LAN can reach the Gateway.
+    ports:
+      - "127.0.0.1:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+    restart: unless-stopped
+    command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
+    healthcheck:
+      test: ["CMD", "node", "dist/docker-healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  openclaw-cli:
+    <<: *openclaw-common
+    network_mode: "service:openclaw-gateway"
+    # Share the Gateway's PID namespace so CLI config writes can verify the Gateway lock.
+    pid: "service:openclaw-gateway"
+    environment:
+      <<: *openclaw-env
+      BROWSER: echo
+    stdin_open: true
+    tty: true
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-gateway
+    profiles: ["cli"]
