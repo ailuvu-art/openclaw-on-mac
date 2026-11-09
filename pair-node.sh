@@ -29,7 +29,8 @@ docker compose --profile node pull openclaw-node
 
 # Hand the single-use join URL to the container through a private file;
 # the node deletes it after reading, so it never appears in process args.
-docker compose stop openclaw-node >/dev/null 2>&1 || true
+# Remove any old node container; a stale one can point at a deleted network.
+docker compose --profile node rm -sf openclaw-node >/dev/null 2>&1 || true
 umask 077
 printf '%s\n' "$target" > node-state/join-target
 
@@ -39,7 +40,7 @@ docker compose --profile node run --rm --no-deps --user root --entrypoint sh ope
    find -P /home/node/.openclaw -xdev -execdir chown -h node:node {} +'
 
 echo "==> Starting node"
-docker compose --profile node up -d openclaw-node
+docker compose --profile node up -d --force-recreate openclaw-node
 
 echo ""
 echo "Node started. Watch it with:  docker compose logs -f openclaw-node"
