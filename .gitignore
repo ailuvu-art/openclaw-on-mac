@@ -10,3 +10,5 @@ secrets/*
 !secrets/.gitkeep
 
 .DS_Store
+node-state/*
+!node-state/.gitkeep

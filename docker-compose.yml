@@ -70,3 +70,47 @@ services:
     depends_on:
       - openclaw-gateway
     profiles: ["cli"]
+
+  # Optional node that pairs this Mac to a remote OpenClaw Gateway.
+  # It sees only ./workspace (at /workspace) and its own ./node-state.
+  # Pair it with ./pair-node.sh; see README "Pair to a remote Gateway".
+  openclaw-node:
+    image: ${OPENCLAW_NODE_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    env_file:
+      - path: .env
+        required: false
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    environment:
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      # Keep the local Gateway's token away from the remote pairing.
+      OPENCLAW_GATEWAY_TOKEN: ""
+      OPENCLAW_NODE_NAME: ${OPENCLAW_NODE_NAME:-openclaw-on-mac}
+      CF_ACCESS_CLIENT_ID: ${CF_ACCESS_CLIENT_ID:-}
+      CF_ACCESS_CLIENT_SECRET: ${CF_ACCESS_CLIENT_SECRET:-}
+      TERM: xterm-256color
+      TZ: ${OPENCLAW_TZ:-UTC}
+    volumes:
+      - ./node-state:/home/node/.openclaw
+      - ./workspace:/workspace
+    working_dir: /workspace
+    restart: unless-stopped
+    # The image healthcheck probes a local Gateway; a node has none.
+    healthcheck:
+      disable: true
+    # First start redeems the join URL written by pair-node.sh (the file is
+    # removed after reading); later starts reconnect with the saved device token.
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ -s /home/node/.openclaw/join-target ]; then
+          exec node /app/dist/index.js connect --target-file /home/node/.openclaw/join-target --display-name "$$OPENCLAW_NODE_NAME"
+        fi
+        exec node /app/dist/index.js node run --display-name "$$OPENCLAW_NODE_NAME"
+    profiles: ["node"]
