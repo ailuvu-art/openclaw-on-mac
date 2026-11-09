@@ -14,7 +14,9 @@ openclaw-on-mac/
 ├── node-state/  -> node container state (optional, see "Pair to a remote Gateway")
 ├── .env         your local settings + Gateway token (git-ignored)
 ├── docker-compose.yml
-└── setup.sh
+├── setup.sh       one-time local Gateway setup
+├── pair-node.sh   pair the node to a remote Gateway
+└── node.sh        start / stop / check the node
 ```
 
 ## Requirements
@@ -119,9 +121,14 @@ It cannot see your screen, camera, apps, or any file outside this repo.
 Create a service token so the node can pass Access:
 
 1. Cloudflare Zero Trust → **Access → Service Auth → Service Tokens → Create**.
-   Copy the Client ID and Client Secret (shown once).
+   Copy the Client ID and Client Secret (the secret is shown once).
 2. Open the Access application that protects the Gateway hostname → **Policies →
-   Add policy**, action **Service Auth**, include **Service Token** = the new token.
+   Add policy**:
+   - Action: **Service Auth**. An **Allow** policy that includes a service token
+     still returns 403, because Allow expects a person to log in.
+   - Include: **Service Token** = the new token.
+   - Put it above any Block policy. If separate Access apps cover paths on the
+     same hostname, the app covering `/j/*` and `/__openclaw__/worker` needs it too.
 3. Put both values in `.env`:
 
    ```bash
@@ -129,8 +136,24 @@ Create a service token so the node can pass Access:
    CF_ACCESS_CLIENT_SECRET=<client-secret>
    ```
 
+4. Verify the token passes Access (uses a fake code, so no join code is spent):
+
+   ```bash
+   ./node.sh check
+   ```
+
+   | Result | Meaning |
+   |---|---|
+   | `404` | OK: the token passes Access |
+   | `403` | Token recognised, but no **Service Auth** policy allows it |
+   | `302` | Token missing or invalid; Access redirects to the login page |
+
+   `check` targets `https://oc.nolanng.tech` by default; set
+   `OPENCLAW_REMOTE_GATEWAY` in `.env` for another Gateway.
+
 Also set `OPENCLAW_NODE_IMAGE` in `.env` to the Gateway's version
 (`openclaw --version` on the Gateway, e.g. `ghcr.io/openclaw/openclaw:2026.11.1`).
+Upgrade the Gateway first, then the node.
 
 ### 2. Get a join URL and pair
 
@@ -141,20 +164,25 @@ openclaw devices join-code
 ```
 
 It prints `https://<gateway>/j/<code>`. The code is single-use and expires in
-~10 minutes. On the Mac:
+~10 minutes, so mint it only when you're ready to run the next command. On the Mac:
 
 ```bash
 ./pair-node.sh 'https://<gateway>/j/<code>'
-docker compose logs -f openclaw-node
+./node.sh logs
 ```
 
-### 3. Approve on the Gateway
+### 3. Confirm on the Gateway
+
+A join code minted by an admin approves the node and its first command set
+automatically. Confirm it is connected:
 
 ```bash
-openclaw nodes pending
-openclaw nodes approve <requestId>
+openclaw devices list        # look for OPENCLAW_NODE_NAME
 openclaw nodes status
 ```
+
+If it shows up under `openclaw nodes pending` instead, approve it with
+`openclaw nodes approve <requestId>`.
 
 The node keeps its device token in `./node-state`, so it reconnects after
 restarts with no new code.
@@ -162,19 +190,33 @@ restarts with no new code.
 ### Manage the node
 
 ```bash
-docker compose --profile node up -d openclaw-node   # start
-docker compose stop openclaw-node                    # stop
-docker compose logs -f openclaw-node                 # logs
+./node.sh start     # start the paired node
+./node.sh stop      # disconnect (stays paired)
+./node.sh restart   # recreate the container
+./node.sh status    # container state + last log lines
+./node.sh logs      # follow logs
+./node.sh check     # test the Cloudflare service token
+./node.sh unpair    # delete the container and local device token
 ```
 
-To unpair: remove the node on the Gateway (`openclaw nodes` / Control UI →
-Devices), then `docker compose rm -sf openclaw-node && rm -rf node-state/*`.
+After `./node.sh unpair`, also remove the device on the Gateway
+(Control UI → Devices, or `openclaw devices` there). To pair again, mint a
+new join code and run `./pair-node.sh`.
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `Gateway join code was not found or has expired.` | Shown for **any** failed join request, not only expired codes. Run `./node.sh check` first; if it isn't `404`, fix the Access policy. If it is `404`, mint a fresh code (each is single-use, ~10 min). |
+| `failed to set up container networking: network … not found` | A stale container points at a deleted network. `./node.sh restart`, or rerun `./pair-node.sh` (it always recreates the container). |
+| Node pairs but never shows on the Gateway | Check `./node.sh logs` for TLS or 403 errors on the WebSocket; the Access policy must cover the whole hostname. |
 
 Notes:
 
 - Commands run with the node's local exec approvals, which default to **full**
   inside the container. That is the point of the isolation: full access, but
   only to `/workspace`.
+- `./workspace` is shared with the local Gateway, so both agents see the same files.
 - `./node-state` holds the node's device token. Treat it as a credential.
 
 ## Reset
